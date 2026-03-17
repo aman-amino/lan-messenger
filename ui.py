@@ -64,6 +64,15 @@ class LANMessengerApp(ctk.CTk):
         # Periodic Updates
         self.after(2000, self.refresh_peers)
         self.load_chat_history()
+
+        # Start Peer Discovery
+        self.broadcast_discovery()
+
+    def broadcast_discovery(self):
+        if self.network.running:
+            threading.Thread(target=self.network.broadcast_discovery, args=(self.username,), daemon=True).start()
+            # Broadcast every 10 seconds
+            self.after(10000, self.broadcast_discovery)
         
     def prompt_username(self):
         dialog = ctk.CTkInputDialog(text="Enter your username:", title="Set Username")
@@ -99,62 +108,6 @@ class LANMessengerApp(ctk.CTk):
              self.load_chat_history()
         elif event_type in ['EDIT', 'DELETE']:
              self.load_chat_history()
-
-    # ... (rest of methods)
-
-    def update_username(self, event=None):
-        new_name = self.username_entry.get()
-        if new_name:
-            self.username = new_name
-            self.settings["username"] = new_name
-            save_settings(self.settings)
-            
-    def refresh_peers(self):
-        # Only show peers we know about (from Manual Add or HELLO)
-        
-        # Rebuild peer list UI
-        for widget in self.peers_scroll.winfo_children():
-            widget.destroy()
-            
-        for ip, name in self.peers.items():
-            row = ctk.CTkFrame(self.peers_scroll)
-            row.pack(fill="x", pady=2)
-            lbl = ctk.CTkLabel(row, text=f"{name}\n{ip}", font=("Arial", 10))
-            lbl.pack(side="left", padx=5)
-            
-            btn = ctk.CTkButton(row, text="Browse", width=60, height=20, 
-                              command=lambda i=ip, n=name: self.browse_peer_files(i, n))
-            btn.pack(side="right", padx=5)
-        self.after(2000, self.refresh_peers)
-
-    def open_settings(self):
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Settings")
-        dialog.geometry("400x300")
-        dialog.transient(self) # Make modal-like
-        
-        ctk.CTkLabel(dialog, text="Chat Port (TCP):").pack(pady=(10, 0))
-        entry_chat = ctk.CTkEntry(dialog)
-        entry_chat.insert(0, str(self.settings["tcp_chat_port"]))
-        entry_chat.pack(pady=5)
-        
-        ctk.CTkLabel(dialog, text="File Port (TCP):").pack(pady=(10, 0))
-        entry_file = ctk.CTkEntry(dialog)
-        entry_file.insert(0, str(self.settings["tcp_file_port"]))
-        entry_file.pack(pady=5)
-        
-        def save():
-            try:
-                self.settings["tcp_chat_port"] = int(entry_chat.get())
-                self.settings["tcp_file_port"] = int(entry_file.get())
-                self.settings["username"] = self.username
-                save_settings(self.settings)
-                messagebox.showinfo("Saved", "Settings saved. Please restart the application to apply changes.")
-                dialog.destroy()
-            except ValueError:
-                messagebox.showerror("Error", "Ports must be numbers.")
-        
-        ctk.CTkButton(dialog, text="Save & Restart", command=save, fg_color="green").pack(pady=20)
 
     def on_closing(self):
         self.network.close()

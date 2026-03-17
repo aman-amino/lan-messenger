@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import ssl
 from pathlib import Path
 
 DEFAULT_SETTINGS = {
@@ -54,3 +55,13 @@ def generate_tls_cert():
 
 # Call once on module load
 generate_tls_cert()
+
+# TLS helper – wrap a raw socket with our self‑signed cert/key
+def wrap_socket(sock, server_side: bool = False):
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH if server_side else ssl.Purpose.SERVER_AUTH)
+    ctx.load_cert_chain(certfile=str(TLS_CERT_FILE),
+                        keyfile=str(TLS_KEY_FILE))
+    if not server_side:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx.wrap_socket(sock, server_side=server_side)

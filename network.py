@@ -2,18 +2,9 @@ import socket
 import threading
 import json
 import time
-import ssl
-from pathlib import Path
+from config import wrap_socket
 
-# TLS helper – wrap a raw socket with our self‑signed cert/key
-def _wrap_socket(sock: socket.socket, server_side: bool = False) -> ssl.SSLSocket:
-    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH if server_side else ssl.Purpose.SERVER_AUTH)
-    ctx.load_cert_chain(certfile=str(Path(__file__).parent / "tls_cert.pem"),
-                        keyfile=str(Path(__file__).parent / "tls_key.pem"))
-    if not server_side:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    return ctx.wrap_socket(sock, server_side=server_side)
+UDP_BROADCAST_PORT = 12345
 
 class NetworkManager:
     def __init__(self, db, port, callback_update_ui=None, auth_token=None, allowed_ips=None):
@@ -25,7 +16,15 @@ class NetworkManager:
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.running = True
+
+        # TCP Server
         threading.Thread(target=self.start_server, daemon=True).start()
+
+        # UDP Discovery
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        threading.Thread(target=self.start_udp_listener, daemon=True).start()
 
     def start_server(self):
         print(f"[DEBUG] Network Server starting...")
@@ -41,7 +40,7 @@ class NetworkManager:
             try:
                 client, addr = self.server_sock.accept()
                 # Wrap with TLS
-                client = _wrap_socket(client, server_side=True)
+                client = wrap_socket(client, server_side=True)
                 threading.Thread(target=self.handle_client, args=(client, addr), daemon=True).start()
             except OSError as e:
                 if self.running:
@@ -62,9 +61,9 @@ class NetworkManager:
                 return
 
             data_raw = client.recv(8192).decode()
-            if not data_raw: 
+            if not data_raw:
                 return
-            
+
             print(f"[DEBUG] Received data from {addr}: {data_raw}")
             try:
                 data = json.loads(data_raw)
@@ -81,11 +80,11 @@ class NetworkManager:
 
             # Existing message handling unchanged – keep as is
             msg_type = data.get('type')
-            
+
             if msg_type == 'HELLO':
                 sender_username = data.get('username')
                 if self.callback: self.callback('NEW_PEER', addr[0], sender_username)
-            
+
             elif msg_type == 'MSG':
                 sender = data.get('sender')
                 content = data.get('content')
@@ -93,7 +92,7 @@ class NetworkManager:
                 timestamp = time.time()
                 self.db.add_received_message(msg_id, sender, content, timestamp)
                 if self.callback: self.callback('MSG', msg_id, sender, content)
-            
+
             elif msg_type == 'MSG_EDIT':
                 msg_id = data.get('id')
                 new_content = data.get('content')
@@ -120,7 +119,7 @@ class NetworkManager:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as raw:
                 raw.settimeout(5)
                 raw.connect((target_ip, self.port))
-                s = _wrap_socket(raw)
+                s = wrap_socket(raw)
                 s.sendall(json.dumps(packet).encode())
                 return True
         except Exception as e:
@@ -151,9 +150,39 @@ class NetworkManager:
             'id': msg_id
         })
 
+    def start_udp_listener(self):
+        try:
+            self.udp_sock.bind(('', UDP_BROADCAST_PORT))
+        except Exception as e:
+            print(f"[DEBUG] UDP bind failed: {e}")
+            return
+
+        while self.running:
+            try:
+                data, addr = self.udp_sock.recvfrom(1024)
+                if not data: continue
+
+                packet = json.loads(data.decode())
+                if packet.get('type') == 'DISCOVERY':
+                    sender_username = packet.get('username')
+                    if self.callback: self.callback('NEW_PEER', addr[0], sender_username)
+            except Exception as e:
+                if self.running:
+                    print(f"[DEBUG] UDP listener error: {e}")
+                break
+
+    def broadcast_discovery(self, username):
+        """Broadcast discovery packet over UDP."""
+        packet = json.dumps({'type': 'DISCOVERY', 'username': username}).encode()
+        try:
+            self.udp_sock.sendto(packet, ('<broadcast>', UDP_BROADCAST_PORT))
+        except Exception as e:
+            print(f"[DEBUG] UDP broadcast failed: {e}")
+
     def close(self):
         self.running = False
         try:
             self.server_sock.close()
+            self.udp_sock.close()
         except:
             pass
